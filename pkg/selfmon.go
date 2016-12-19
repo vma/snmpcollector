@@ -97,6 +97,12 @@ func (sm *SelfMonConfig) IsInitialized() bool {
 	return sm.initialized
 }
 
+func (sm *SelfMonConfig) getOutput() *InfluxDB {
+	sm.mutex.Lock()
+	defer sm.mutex.Unlock()
+	return sm.Influx
+}
+
 func (sm *SelfMonConfig) setOutput(val *InfluxDB) {
 	sm.mutex.Lock()
 	defer sm.mutex.Unlock()

@@ -48,6 +48,32 @@ export class Home {
       );
   }
 
+  agentStart() {
+    this.httpAPI.get('/runtime/agent/start')
+      .subscribe(
+        response => {
+            alert(response.json())
+        },
+        error => {
+          alert(error.text());
+          console.log(error.text());
+        }
+      );
+  }
+
+  agentStop() {
+    this.httpAPI.get('/runtime/agent/stop')
+      .subscribe(
+        response => {
+            alert(response.json())
+        },
+        error => {
+          alert(error.text());
+          console.log(error.text());
+        }
+      );
+  }
+
   InfluxServers() {
 	  this.item_type = "influxserver";
   }

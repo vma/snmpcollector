@@ -57,8 +57,9 @@ var (
 	//runtime output db's
 	influxdb map[string]*InfluxDB
 	// for synchronize  deivce specific goroutines
-	GatherWg sync.WaitGroup
-	SenderWg sync.WaitGroup
+	GatherWg  sync.WaitGroup
+	SelfmonWg sync.WaitGroup
+	//SenderWg  sync.WaitGroup
 )
 
 func flags() *flag.FlagSet {
@@ -128,11 +129,12 @@ func PrepareInfluxDBs() map[string]*InfluxDB {
 			defFound = true
 		}
 		dev := InfluxDB{
-			cfg:     c,
-			dummy:   false,
-			started: false,
-			Sent:    0,
-			Errors:  0,
+			cfg:       c,
+			dummy:     false,
+			initrefs:  0,
+			startrefs: 0,
+			Sent:      0,
+			Errors:    0,
 		}
 		idb[k] = &dev
 	}
@@ -142,29 +144,6 @@ func PrepareInfluxDBs() map[string]*InfluxDB {
 		idb["default"] = influxdbDummy
 	}
 	return idb
-}
-
-func initSelfMonitoring(idb map[string]*InfluxDB) {
-	log.Debugf("INFLUXDB2: %+v", idb)
-	if cfg.Selfmon.Enabled && !showConfig {
-		if val, ok := idb["default"]; ok {
-			//only executed if a "default" influxdb exist
-			val.Init()
-			val.StartSender(&SenderWg)
-
-			cfg.Selfmon.Init()
-			cfg.Selfmon.setOutput(val)
-
-			log.Printf("SELFMON enabled %+v", cfg.Selfmon)
-			//Begin the statistic reporting
-			cfg.Selfmon.StartGather(&GatherWg)
-		} else {
-			cfg.Selfmon.Enabled = false
-			log.Errorf("SELFMON disabled becaouse of no default db found !!! SELFMON[ %+v ]  INFLUXLIST[ %+v]\n", cfg.Selfmon, idb)
-		}
-	} else {
-		log.Printf("SELFMON disabled %+v\n", cfg.Selfmon)
-	}
 }
 
 func init() {
@@ -240,6 +219,7 @@ func GetDevStats() map[string]*devStat {
 	return devstats
 }
 
+/*
 func StopInfluxOut(idb map[string]*InfluxDB) {
 	for k, v := range idb {
 		log.Infof("Stopping Influxdb out %s", k)
@@ -253,12 +233,12 @@ func ReleaseInfluxOut(idb map[string]*InfluxDB) {
 		v.End()
 	}
 }
-
+*/
 // ProcessStop stop all device goroutines
 func DeviceProcessStop() {
 	mutex.Lock()
-	for _, c := range devices {
-		c.StopGather()
+	for _, d := range devices {
+		d.StopGather()
 	}
 	mutex.Unlock()
 }
@@ -266,8 +246,9 @@ func DeviceProcessStop() {
 // ProcessStart start all devices goroutines
 func DeviceProcessStart() {
 	mutex.Lock()
-	for _, c := range devices {
-		c.StartGather(&GatherWg)
+	for _, d := range devices {
+
+		d.StartGather(&GatherWg)
 	}
 	mutex.Unlock()
 }
@@ -287,32 +268,11 @@ func LoadConf() {
 	//Prepare the InfluxDataBases Configuration
 	influxdb = PrepareInfluxDBs()
 
-	// beginning self monitoring process if needed.( before each other gorotines could begin)
-
-	initSelfMonitoring(influxdb)
-
 	//Initialize Device Metrics CFG
 
 	initMetricsCfg()
 
 	//Initialize Device Runtime map
-
-	devices = make(map[string]*SnmpDevice)
-
-	for k, c := range cfg.SnmpDevice {
-		//Inticialize each SNMP device and put pointer to the global map devices
-		dev := NewSnmpDevice(c)
-		dev.SetSelfMonitoring(&cfg.Selfmon)
-		//send db's map to initialize each one its own db if needed and not yet initialized
-		if !showConfig {
-			outdb, _ := dev.GetOutSenderFromMap(influxdb)
-			outdb.Init()
-			outdb.StartSender(&SenderWg)
-		}
-		mutex.Lock()
-		devices[k] = dev
-		mutex.Unlock()
-	}
 
 	// only run when one needs to see the interface names of the device
 	if showConfig {
@@ -328,36 +288,127 @@ func LoadConf() {
 	//beginning  the gather process
 }
 
+func AgentStop() time.Duration {
+	start := time.Now()
+	log.Info("Agent begin device Gather processes stop...")
+	DeviceProcessStop()
+	log.Info("Agent waiting for all Gather gorotines stop...")
+	GatherWg.Wait()
+	log.Info("Agent releasing Device Resources")
+	mutex.Lock()
+	for k, dev := range devices {
+		log.Infof("Stopping out sender for device %s", k)
+		//Inticialize each SNMP device and put pointer to the global map devices
+		outdb, _ := dev.GetOutSenderFromMap(influxdb)
+		outdb.StopSender() //Sinc operaton blocks until really stopped
+		outdb.End()
+	}
+	mutex.Unlock()
+
+	ReleaseDevices()
+
+	return time.Since(start)
+}
+
+func AgentStart() time.Duration {
+	start := time.Now()
+	devices = make(map[string]*SnmpDevice)
+
+	for k, c := range cfg.SnmpDevice {
+		//Inticialize each SNMP device and put pointer to the global map devices
+		dev := NewSnmpDevice(c)
+		dev.SetSelfMonitoring(&cfg.Selfmon)
+		if !showConfig {
+			outdb, _ := dev.GetOutSenderFromMap(influxdb)
+			outdb.Init()
+			outdb.StartSender( /*&SenderWg*/ )
+		}
+
+		mutex.Lock()
+		devices[k] = dev
+		mutex.Unlock()
+	}
+	log.Info("Agent Starting all device processes ...")
+	DeviceProcessStart()
+	return time.Since(start)
+}
+
+func SelfMonStop() time.Duration {
+	start := time.Now()
+	log.Info("Selmon: begin selfmon Gather processes stop...")
+	//stop the selfmon process
+	cfg.Selfmon.StopGather()
+	log.Info("Selfmon: waiting for SelfMon Gather gorotines stop...")
+	//wait until Done
+	SelfmonWg.Wait()
+	log.Info("Selfmon: releasing Seflmonitoring Resources")
+
+	outdb := cfg.Selfmon.getOutput()
+	cfg.Selfmon.End()
+
+	outdb.StopSender() //Blocking operation
+	outdb.End()
+
+	return time.Since(start)
+}
+
+func SelfMonStart() time.Duration {
+	start := time.Now()
+	idb := influxdb
+	log.Debugf("INFLUXDB ARRAY: %+v", idb)
+	if cfg.Selfmon.Enabled && !showConfig {
+		if outdb, ok := idb["default"]; ok {
+			//only executed if a "default" influxdb exist
+			log.Debugf("INFLUXDB  OUT: %+v", outdb)
+			outdb.Init()
+			outdb.StartSender()
+
+			cfg.Selfmon.Init()
+			cfg.Selfmon.setOutput(outdb)
+
+			log.Printf("SELFMON enabled %+v", cfg.Selfmon)
+			//Begin the statistic reporting
+			cfg.Selfmon.StartGather(&SelfmonWg)
+		} else {
+			cfg.Selfmon.Enabled = false
+			log.Errorf("SELFMON disabled becaouse of no default db found !!! SELFMON[ %+v ]  INFLUXLIST[ %+v]\n", cfg.Selfmon, idb)
+		}
+	} else {
+		log.Printf("SELFMON disabled %+v\n", cfg.Selfmon)
+	}
+
+	return time.Since(start)
+}
+
+/*
+func SenderStop() time.Duration {
+	start := time.Now()
+	log.Info("Sender: begin sender processes stop...")
+	//stop all Output Emmiter
+	StopInfluxOut(influxdb)
+	log.Info("Sender: waiting for all Sender gorotines stop..")
+	SenderWg.Wait()
+	log.Info("Sender: releasing Sender Resources")
+	ReleaseInfluxOut(influxdb)
+	return time.Since(start)
+}*/
+
 // ReloadConf call to reinitialize alln configurations
 func ReloadConf() time.Duration {
 	start := time.Now()
-	log.Info("RELOADCONF: begin device Gather processes stop...")
-	//stop all device prcesses
-	DeviceProcessStop()
-	log.Info("RELOADCONF: begin selfmon Gather processes stop...")
-	//stop the selfmon process
-	cfg.Selfmon.StopGather()
-	log.Info("RELOADCONF: waiting for all Gather gorotines stop...")
-	//wait until Done
-	GatherWg.Wait()
-	log.Info("RELOADCONF: releasing Device Resources")
-	ReleaseDevices()
-	log.Info("RELOADCONF: releasing Seflmonitoring Resources")
-	cfg.Selfmon.End()
-	log.Info("RELOADCONF: begin sender processes stop...")
-	//stop all Output Emmiter
-	//log.Info("DEBUG Gather WAIT %+v", GatherWg)
-	//log.Info("DEBUG SENDER WAIT %+v", SenderWg)
-	StopInfluxOut(influxdb)
-	log.Info("RELOADCONF: waiting for all Sender gorotines stop..")
-	SenderWg.Wait()
-	log.Info("RELOADCONF: releasing Sender Resources")
-	ReleaseInfluxOut(influxdb)
+	AgentStop() //
+
+	SelfMonStop()
+
+	//SenderStop()
 
 	log.Info("RELOADCONF: ĺoading configuration Again...")
 	LoadConf()
-	log.Info("RELOADCONF: Starting all device processes again...")
-	DeviceProcessStart()
+
+	SelfMonStart()
+
+	AgentStart() //include initialize and Start Senders
+
 	return time.Since(start)
 }
 
@@ -372,7 +423,9 @@ func main() {
 
 	LoadConf()
 
-	DeviceProcessStart()
+	SelfMonStart()
+
+	AgentStart() //include Sender Start
 
 	var port int
 	if cfg.HTTP.Port > 0 {

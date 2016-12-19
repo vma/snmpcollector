@@ -197,7 +197,9 @@ func webServer(port int) {
 	})
 
 	m.Group("/runtime", func() {
-		m.Get("/agent/reloadconf/", reqSignedIn, AgentReloadConf)
+		m.Get("/agent/reloadconf/", reqSignedIn, uiAgentReloadConf)
+		m.Get("/agent/start/", reqSignedIn, uiAgentStart)
+		m.Get("/agent/stop/", reqSignedIn, uiAgentStop)
 		m.Post("/snmpping/", reqSignedIn, bind(SnmpDeviceCfg{}), PingSNMPDevice)
 		m.Post("/snmpquery/:getmode/:obtype/:data", reqSignedIn, bind(SnmpDeviceCfg{}), QuerySNMPDevice)
 		m.Get("/version/", reqSignedIn, RTGetVersion)
@@ -223,9 +225,21 @@ func webServer(port int) {
 
 /* Agent */
 
-func AgentReloadConf(ctx *Context) {
+func uiAgentReloadConf(ctx *Context) {
 	log.Info("trying to reload configuration for all devices")
 	time := ReloadConf()
+	ctx.JSON(200, time)
+}
+
+func uiAgentStop(ctx *Context) {
+	log.Info("trying to Stop agent background process")
+	time := AgentStop()
+	ctx.JSON(200, time)
+}
+
+func uiAgentStart(ctx *Context) {
+	log.Info("trying to Start Agent background process")
+	time := AgentStart()
 	ctx.JSON(200, time)
 }
 
