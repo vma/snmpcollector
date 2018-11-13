@@ -13,15 +13,18 @@ import (
 	"github.com/toni-moreno/snmpcollector/pkg/config"
 )
 
-// Version X.Y.Z based versioning
 var (
-	Version    string
-	Commit     string
-	Branch     string
+	// Version is the app X.Y.Z version
+	Version string
+	// Commit is the git commit sha1
+	Commit string
+	// Branch is the git branch
+	Branch string
+	// BuildStamp is the build timestamp
 	BuildStamp string
 )
 
-// RInfo  Release basic version info for the agent
+// RInfo contains the agent's release and version info.
 type RInfo struct {
 	InstanceID string
 	Version    string
@@ -30,7 +33,7 @@ type RInfo struct {
 	BuildStamp string
 }
 
-// GetRInfo return Release Agent Information
+// GetRInfo returns the agent release info.
 func GetRInfo() *RInfo {
 	info := &RInfo{
 		InstanceID: MainConfig.General.InstanceID,
@@ -43,47 +46,43 @@ func GetRInfo() *RInfo {
 }
 
 var (
-	// Bus the bus messaging system to send messages over the devices
+	// Bus is the messaging system used to send messages to the devices
 	Bus = bus.NewBus()
-
-	// MainConfig has all configuration
+	// MainConfig contains the global configuration
 	MainConfig config.Config
-
-	// DBConfig db config
+	// DBConfig is the database config
 	DBConfig config.DBConfig
 
 	log *logrus.Logger
-	//mutex for devices map
-	mutex sync.RWMutex
-	//reload mutex
+	// mutex guards the device map access
+	mutex         sync.RWMutex
 	reloadMutex   sync.Mutex
 	reloadProcess bool
-	//runtime devices
+	// devices is the runtime snmp devices map
 	devices map[string]*device.SnmpDevice
-	//runtime output db's
-	influxdb map[string]*output.InfluxDB
-
+	// influxdb is the runtime output dbs map
+	influxdb    map[string]*output.InfluxDB
 	selfmonProc *selfmon.SelfMon
-	// for synchronize  deivce specific goroutines
+	// gatherWg synchronizes device specific goroutines
 	gatherWg sync.WaitGroup
 	senderWg sync.WaitGroup
 )
 
-// SetLogger set log output
+// SetLogger sets the log output.
 func SetLogger(l *logrus.Logger) {
 	log = l
 }
 
 //Reload Mutex Related Methods.
 
-// CheckReloadProcess check if the agent is doing a reloading just now
+// CheckReloadProcess checks if the agent is currently reloading config.
 func CheckReloadProcess() bool {
 	reloadMutex.Lock()
 	defer reloadMutex.Unlock()
 	return reloadProcess
 }
 
-// CheckAndSetReloadProcess set the reloadProcess flat to true and  return the last stat before true set
+// CheckAndSetReloadProcess sets the reloadProcess flag and returns its previous value.
 func CheckAndSetReloadProcess() bool {
 	reloadMutex.Lock()
 	defer reloadMutex.Unlock()
@@ -92,7 +91,7 @@ func CheckAndSetReloadProcess() bool {
 	return retval
 }
 
-// CheckAndUnSetReloadProcess set the reloadProcess flat to false and  return the last stat before true set
+// CheckAndUnSetReloadProcess unsets the reloadProcess flag and return its previous value.
 func CheckAndUnSetReloadProcess() bool {
 	reloadMutex.Lock()
 	defer reloadMutex.Unlock()
@@ -101,7 +100,7 @@ func CheckAndUnSetReloadProcess() bool {
 	return retval
 }
 
-//PrepareInfluxDBs review all configured db's in the SQL database
+// PrepareInfluxDBs reviews all configured db's in the SQL database
 // and check if exist at least a "default", if not creates a dummy db which does nothing
 func PrepareInfluxDBs() map[string]*output.InfluxDB {
 	idb := make(map[string]*output.InfluxDB)
@@ -122,29 +121,31 @@ func PrepareInfluxDBs() map[string]*output.InfluxDB {
 	return idb
 }
 
-//GetDevice is a safe method to get a Device Object
+// GetDevice returns the snmp device with the given id.
+// Returns an error if there is an ongoing reload.
 func GetDevice(id string) (*device.SnmpDevice, error) {
 	var dev *device.SnmpDevice
 	var ok bool
-	if CheckReloadProcess() == true {
-		log.Warning("There is a reload process running while trying to get device info")
-		return nil, fmt.Errorf("There is a reload process running.... please wait until finished ")
+	if CheckReloadProcess() {
+		log.Warning("Ongoing reload while trying to get device info")
+		return nil, fmt.Errorf("There is an ongoing reload... please wait until finished")
 	}
 	mutex.RLock()
 	defer mutex.RUnlock()
 	if dev, ok = devices[id]; !ok {
-		return nil, fmt.Errorf("there is not any device with id %s running", id)
+		return nil, fmt.Errorf("There is not any device with id %s running", id)
 	}
 	return dev, nil
 }
 
-//GetDeviceJSONInfo get device data in JSON format just if not doing a reloading process
+// GetDeviceJSONInfo returns the device data in JSON format.
+// Returns an error if there is an ongoing reload.
 func GetDeviceJSONInfo(id string) ([]byte, error) {
 	var dev *device.SnmpDevice
 	var ok bool
-	if CheckReloadProcess() == true {
-		log.Warning("There is a reload process running while trying to get device info")
-		return nil, fmt.Errorf("There is a reload process running.... please wait until finished ")
+	if CheckReloadProcess() {
+		log.Warning("Ongoing reload while trying to get device info")
+		return nil, fmt.Errorf("There is an ongoing reload... please wait until finished")
 	}
 	mutex.RLock()
 	defer mutex.RUnlock()
@@ -154,7 +155,7 @@ func GetDeviceJSONInfo(id string) ([]byte, error) {
 	return dev.ToJSON()
 }
 
-// GetDevStats xx
+// GetDevStats returns a map with the basic info for each device.
 func GetDevStats() map[string]*device.DevStat {
 	devstats := make(map[string]*device.DevStat)
 	mutex.RLock()
@@ -165,7 +166,7 @@ func GetDevStats() map[string]*device.DevStat {
 	return devstats
 }
 
-// StopInfluxOut xx
+// StopInfluxOut stops sending data to influxDB servers.
 func StopInfluxOut(idb map[string]*output.InfluxDB) {
 	for k, v := range idb {
 		log.Infof("Stopping Influxdb out %s", k)
@@ -173,7 +174,7 @@ func StopInfluxOut(idb map[string]*output.InfluxDB) {
 	}
 }
 
-// ReleaseInfluxOut xx
+// ReleaseInfluxOut closes the influxDB connections and releases the corresponding resources.
 func ReleaseInfluxOut(idb map[string]*output.InfluxDB) {
 	for k, v := range idb {
 		log.Infof("Release Influxdb resources %s", k)
@@ -181,12 +182,12 @@ func ReleaseInfluxOut(idb map[string]*output.InfluxDB) {
 	}
 }
 
-// DeviceProcessStop stop all device goroutines
+// DeviceProcessStop stops all device polling routines.
 func DeviceProcessStop() {
 	Bus.Broadcast(&bus.Message{Type: "exit"})
 }
 
-// DeviceProcessStart start all devices goroutines
+// DeviceProcessStart starts all devices polling routines.
 func DeviceProcessStart() {
 	mutex.Lock()
 	devices = make(map[string]*device.SnmpDevice)
@@ -197,7 +198,7 @@ func DeviceProcessStart() {
 	}
 }
 
-// ReleaseDevices Executes End for each device
+// ReleaseDevices releases all devices resources.
 func ReleaseDevices() {
 	mutex.RLock()
 	for _, c := range devices {
@@ -236,10 +237,10 @@ func initSelfMonitoring(idb map[string]*output.InfluxDB) {
 	}
 }
 
-// IsDeviceRuntime check if deviceID exist in the runtime array
+// IsDeviceInRuntime checks if device `id` exists in the runtime array.
 func IsDeviceInRuntime(id string) bool {
-	mutex.Lock()
-	defer mutex.Unlock()
+	mutex.RLock()
+	defer mutex.RUnlock()
 	if _, ok := devices[id]; ok {
 		return true
 	}
@@ -247,33 +248,31 @@ func IsDeviceInRuntime(id string) bool {
 
 }
 
-// DeleteDeviceInRuntime
-func DeleteDeviceInRuntime(id string) error {
-
-	if dev, ok := devices[id]; ok {
-		dev.StopGather()
-		log.Debugf("Bus retuned from the exit message to the ID device %s", id)
-		dev.LeaveBus(Bus)
-		dev.End()
-		mutex.Lock()
-		delete(devices, id)
-		mutex.Unlock()
-		return nil
-		//do something here
+// DeleteDeviceInRuntime removes the device `id` from the runtime array.
+func DeleteDeviceInRuntime(id string) {
+	dev, ok := devices[id]
+	if !ok {
+		log.Errorf("There is no device %s in the runtime device list", id)
+		return
 	}
-	log.Errorf("There is no  %s device in the runtime device list", id)
-	return nil
+
+	dev.StopGather()
+	log.Debugf("Bus returned from the exit message to the ID device %s", id)
+	dev.LeaveBus(Bus)
+	dev.End()
+	mutex.Lock()
+	delete(devices, id)
+	mutex.Unlock()
 }
 
-// AddDeviceInRuntime
+// AddDeviceInRuntime initializes each SNMP device and puts the pointer to the global device map.
 func AddDeviceInRuntime(k string, cfg *config.SnmpDeviceCfg) {
-	//Inticialize each SNMP device and put pointer to the global map devices
 	dev := device.New(cfg)
 	dev.AttachToBus(Bus)
 	dev.InitCatalogVar(DBConfig.VarCatalog)
 	dev.SetSelfMonitoring(selfmonProc)
-	//send db's map to initialize each one its own db if needed and not yet initialized
 
+	// send a db map to initialize each one its own db if needed and not yet initialized
 	outdb, _ := dev.GetOutSenderFromMap(influxdb)
 	outdb.Init()
 	outdb.StartSender(&senderWg)
@@ -282,58 +281,38 @@ func AddDeviceInRuntime(k string, cfg *config.SnmpDeviceCfg) {
 	devices[k] = dev
 	dev.StartGather(&gatherWg)
 	mutex.Unlock()
-
 }
 
-// LoadConf call to initialize alln configurations
+// LoadConf loads the DB conf and initializes the device metric config.
 func LoadConf() {
-	//Load all database info to Cfg struct
 	MainConfig.Database.LoadDbConfig(&DBConfig)
-	//Prepare the InfluxDataBases Configuration
 	influxdb = PrepareInfluxDBs()
-
-	// beginning self monitoring process if needed.( before each other gorotines could begin)
-
-	initSelfMonitoring(influxdb)
-
-	//Initialize Device Metrics CFG
-
+	initSelfMonitoring(influxdb) // begin self monitoring process if needed, before all goroutines
 	config.InitMetricsCfg(&DBConfig)
-
-	//beginning  the gather process
 }
 
-// Start init the agent
+// Start loads the agent configuration and starts it.
 func Start() {
-	//Load Config
 	LoadConf()
-	//Init Processesing
 	DeviceProcessStart()
 }
 
-// End finish all goroutines.
+// End stops all devices polling.
 func End() (time.Duration, error) {
-
 	start := time.Now()
 	log.Infof("END: begin device Gather processes stop... at %s", start.String())
-	//stop all device processes
 	DeviceProcessStop()
 	log.Info("END: begin selfmon Gather processes stop...")
-	//stop the selfmon process
 	selfmonProc.StopGather()
-	log.Info("END: waiting for all Gather gorotines stop...")
-	//wait until Done
-	gatherWg.Wait()
+	log.Info("END: waiting for all Gather goroutines stop...")
+	gatherWg.Wait() // wait until done
 	log.Info("END: releasing Device Resources")
 	ReleaseDevices()
-	log.Info("END: releasing Seflmonitoring Resources")
+	log.Info("END: releasing Selfmonitoring Resources")
 	selfmonProc.End()
 	log.Info("END: begin sender processes stop...")
-	//stop all Output Emmiter
-	//log.Info("DEBUG Gather WAIT %+v", GatherWg)
-	//log.Info("DEBUG SENDER WAIT %+v", senderWg)
 	StopInfluxOut(influxdb)
-	log.Info("END: waiting for all Sender gorotines stop..")
+	log.Info("END: waiting for all Sender goroutines stop...")
 	senderWg.Wait()
 	log.Info("END: releasing Sender Resources")
 	ReleaseInfluxOut(influxdb)
@@ -341,25 +320,21 @@ func End() (time.Duration, error) {
 	return time.Since(start), nil
 }
 
-// ReloadConf call to reinitialize alln configurations
+// ReloadConf stops the polling, reloads all configuration and restart the polling.
 func ReloadConf() (time.Duration, error) {
 	start := time.Now()
-	if CheckAndSetReloadProcess() == true {
-		log.Warning("RELOADCONF: There is another reload process running while trying to reload at %s  ", start.String())
-		return time.Since(start), fmt.Errorf("There is another reload process running.... please wait until finished ")
+	if CheckAndSetReloadProcess() {
+		log.Warningf("RELOADCONF: There is another reload ongoing while trying to reload at %s", start.String())
+		return time.Since(start), fmt.Errorf("There is another reload ongoing... please wait until finished")
 	}
 
-	log.Infof("RELOADCONF INIT: begin device Gather processes stop... at %s", start.String())
+	log.Infof("RELOADCONF INIT: begin device gather processes stop... at %s", start.String())
 	End()
-
-	log.Info("RELOADCONF: loading configuration Again...")
+	log.Info("RELOADCONF: loading configuration again...")
 	LoadConf()
 	log.Info("RELOADCONF: Starting all device processes again...")
-	//Initialize Devices in Runtime map
 	DeviceProcessStart()
-
 	log.Infof("RELOADCONF END: Finished from %s to %s [Duration : %s]", start.String(), time.Now().String(), time.Since(start).String())
 	CheckAndUnSetReloadProcess()
-
 	return time.Since(start), nil
 }
