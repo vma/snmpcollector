@@ -130,9 +130,9 @@ func PrepareInfluxDBs() map[string]*output.InfluxDB {
 func GetDevice(id string) (*device.SnmpDevice, error) {
 	var dev *device.SnmpDevice
 	var ok bool
-	if CheckReloadProcess() == true {
-		log.Warning("There is a reload process running while trying to get device info")
-		return nil, fmt.Errorf("There is a reload process running.... please wait until finished ")
+	if CheckReloadProcess() {
+		log.Warning("Ongoing reload while trying to get device info")
+		return nil, fmt.Errorf("There is an ongoing reload... please wait until finished")
 	}
 	mutex.RLock()
 	defer mutex.RUnlock()
@@ -147,9 +147,9 @@ func GetDevice(id string) (*device.SnmpDevice, error) {
 func GetDeviceJSONInfo(id string) ([]byte, error) {
 	var dev *device.SnmpDevice
 	var ok bool
-	if CheckReloadProcess() == true {
-		log.Warning("There is a reload process running while trying to get device info")
-		return nil, fmt.Errorf("There is a reload process running.... please wait until finished ")
+	if CheckReloadProcess() {
+		log.Warning("Ongoing reload while trying to get device info")
+		return nil, fmt.Errorf("There is an ongoing reload... please wait until finished")
 	}
 	mutex.RLock()
 	defer mutex.RUnlock()
@@ -243,8 +243,8 @@ func initSelfMonitoring(idb map[string]*output.InfluxDB) {
 
 // IsDeviceInRuntime checks if device `id` exists in the runtime array.
 func IsDeviceInRuntime(id string) bool {
-	mutex.Lock()
-	defer mutex.Unlock()
+	mutex.RLock()
+	defer mutex.RUnlock()
 	if _, ok := devices[id]; ok {
 		return true
 	}
@@ -264,8 +264,14 @@ func DeleteDeviceInRuntime(id string) error {
 		mutex.Unlock()
 		return nil
 	}
-	log.Errorf("There is no  %s device in the runtime device list", id)
-	return nil
+
+	dev.StopGather()
+	log.Debugf("Bus returned from the exit message to the ID device %s", id)
+	dev.LeaveBus(Bus)
+	dev.End()
+	mutex.Lock()
+	delete(devices, id)
+	mutex.Unlock()
 }
 
 // AddDeviceInRuntime initializes each SNMP device and puts the pointer to the global device map.
@@ -305,7 +311,6 @@ func Start() {
 
 // End stops all devices polling.
 func End() (time.Duration, error) {
-
 	start := time.Now()
 	log.Infof("END: begin device Gather processes stop... at %s", start.String())
 	// stop all device processes
@@ -336,22 +341,19 @@ func End() (time.Duration, error) {
 // ReloadConf stops the polling, reloads all configuration and restart the polling.
 func ReloadConf() (time.Duration, error) {
 	start := time.Now()
-	if CheckAndSetReloadProcess() == true {
-		log.Warning("RELOADCONF: There is another reload process running while trying to reload at %s  ", start.String())
-		return time.Since(start), fmt.Errorf("There is another reload process running.... please wait until finished ")
+	if CheckAndSetReloadProcess() {
+		log.Warningf("RELOADCONF: There is another reload ongoing while trying to reload at %s", start.String())
+		return time.Since(start), fmt.Errorf("There is another reload ongoing... please wait until finished")
 	}
 
-	log.Infof("RELOADCONF INIT: begin device Gather processes stop... at %s", start.String())
+	log.Infof("RELOADCONF INIT: begin device gather processes stop... at %s", start.String())
 	End()
-
-	log.Info("RELOADCONF: loading configuration Again...")
+	log.Info("RELOADCONF: loading configuration again...")
 	LoadConf()
 	log.Info("RELOADCONF: Starting all device processes again...")
 	// Initialize Devices in Runtime map
 	DeviceProcessStart()
-
 	log.Infof("RELOADCONF END: Finished from %s to %s [Duration : %s]", start.String(), time.Now().String(), time.Since(start).String())
 	CheckAndUnSetReloadProcess()
-
 	return time.Since(start), nil
 }
